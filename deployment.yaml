@@ -13,7 +13,7 @@ spec:
         app: java-ci-app
     spec:
       containers:
-      - name: java-container
+      - name: java-ci-container
         image: sahana1478/java-docker-ci:latest
         imagePullPolicy: Always
         ports:
