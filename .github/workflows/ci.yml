@@ -1,64 +1,89 @@
 name: CI/CD Pipeline - Docker + Kubernetes
- 
+
 on:
   push:
     branches:
       - main
- 
+
+concurrency:
+  group: docker-k8s-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
- 
+    env:
+      IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/java-docker-ci
+      KUBECONFIG: ${{ github.workspace }}/.kube/config
+      # If you use a non-default namespace, set it here:
+      K8S_NAMESPACE: default
+
     steps:
- 
-    # 1️⃣ Checkout Repository
-    - name: Checkout Code
-      uses: actions/checkout@v4
- 
- 
-    # 2️⃣ Login to Docker Hub
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
- 
- 
-    # 3️⃣ Build Docker Image (SHA + latest)
-    - name: Build Docker Image
-      run: |
-        docker build -t ${{ secrets.DOCKER_USERNAME }}/java-docker-ci:${{ github.sha }} .
-        docker tag ${{ secrets.DOCKER_USERNAME }}/java-docker-ci:${{ github.sha }} \
-                   ${{ secrets.DOCKER_USERNAME }}/java-docker-ci:latest
- 
- 
-    # 4️⃣ Push Image to Docker Hub
-    - name: Push Docker Image
-      run: |
-        docker push ${{ secrets.DOCKER_USERNAME }}/java-docker-ci:${{ github.sha }}
-        docker push ${{ secrets.DOCKER_USERNAME }}/java-docker-ci:latest
- 
- 
-    # 5️⃣ Set up kubectl
-    - name: Set up Kubectl
-      uses: azure/setup-kubectl@v4
- 
- 
-    # 6️⃣ Configure Kubeconfig (for Minikube/EC2)
-    - name: Configure Kubeconfig
-      run: |
-        mkdir -p $HOME/.kube
-        echo "${{ secrets.KUBE_CONFIG }}" > $HOME/.kube/config
- 
- 
-    # 7️⃣ Update Image in Deployment
-    - name: Update Deployment Image
-      run: |
-        kubectl set image deployment/java-ci-deployment \
-        java-ci-container=${{ secrets.DOCKER_USERNAME }}/java-docker-ci:${{ github.sha }}
- 
- 
-    # 8️⃣ Rollout Restart
-    - name: Restart Deployment
-      run: |
-        kubectl rollout status deployment/java-ci-deployment --timeout=180s
+      # 1️⃣ Checkout Repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2️⃣ Set up Docker Buildx (for better caching)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 3️⃣ Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 4️⃣ Build Docker Image (tagged with SHA + latest)
+      - name: Build Docker Image
+        run: |
+          docker build -t "$IMAGE_NAME:${{ github.sha }}" .
+          docker tag "$IMAGE_NAME:${{ github.sha }}" "$IMAGE_NAME:latest"
+
+      # 5️⃣ Push Image to Docker Hub
+      - name: Push Docker Image
+        run: |
+          docker push "$IMAGE_NAME:${{ github.sha }}"
+          docker push "$IMAGE_NAME:latest"
+
+      # 6️⃣ Set up kubectl
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "latest"
+
+      # 7️⃣ Configure Kubeconfig
+      # Recommended: store base64-encoded kubeconfig in secret KUBE_CONFIG_B64
+      - name: Configure Kubeconfig
+        run: |
+          mkdir -p "$(dirname "$KUBECONFIG")"
+          if [ -n "${{ secrets.KUBE_CONFIG_B64 }}" ]; then
+            echo "${{ secrets.KUBE_CONFIG_B64 }}" | base64 -d > "$KUBECONFIG"
+          else
+            # Fallback if you stored raw kubeconfig in KUBE_CONFIG (not base64)
+            cat > "$KUBECONFIG" <<'EOF'
+${{ secrets.KUBE_CONFIG }}
+EOF
+          fi
+          chmod 600 "$KUBECONFIG"
+
+      # 8️⃣ Verify cluster connectivity
+      - name: Verify Cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          # If you use a custom namespace, ensure it exists:
+          kubectl get ns "$K8S_NAMESPACE"
+
+      # 9️⃣ Update Deployment Image
+      - name: Update Deployment Image
+        run: |
+          # Adjust container name if different:
+          CONTAINER_NAME="java-ci-container"
+          kubectl -n "$K8S_NAMESPACE" set image deployment/java-ci-deployment \
+            "$CONTAINER_NAME=$IMAGE_NAME:${{ github.sha }}"
+
+      # 🔟 Wait for rollout
+      - name: Rollout Status
+        run: |
+          kubectl -n "$K8S_NAMESPACE" rollout status deployment/java-ci-deployment --timeout=180s
