@@ -15,7 +15,6 @@ jobs:
     env:
       IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/java-docker-ci
       KUBECONFIG: ${{ github.workspace }}/.kube/config
-      # If you use a non-default namespace, set it here:
       K8S_NAMESPACE: default
 
     steps:
@@ -23,37 +22,33 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2️⃣ Set up Docker Buildx (for better caching)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 3️⃣ Login to Docker Hub
+      # 2️⃣ Login to Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 4️⃣ Build Docker Image (tagged with SHA + latest)
+      # 3️⃣ Build Docker Image (SHA + latest)
       - name: Build Docker Image
         run: |
           docker build -t "$IMAGE_NAME:${{ github.sha }}" .
           docker tag "$IMAGE_NAME:${{ github.sha }}" "$IMAGE_NAME:latest"
 
-      # 5️⃣ Push Image to Docker Hub
+      # 4️⃣ Push Image to Docker Hub
       - name: Push Docker Image
         run: |
           docker push "$IMAGE_NAME:${{ github.sha }}"
           docker push "$IMAGE_NAME:latest"
 
-      # 6️⃣ Set up kubectl
+      # 5️⃣ Set up kubectl
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: "latest"
 
-      # 7️⃣ Configure Kubeconfig
-      # Recommended: store base64-encoded kubeconfig in secret KUBE_CONFIG_B64
+      # 6️⃣ Configure Kubeconfig
+      # Prefer base64-encoded kubeconfig in secret KUBE_CONFIG_B64
       - name: Configure Kubeconfig
         run: |
           mkdir -p "$(dirname "$KUBECONFIG")"
@@ -67,23 +62,21 @@ EOF
           fi
           chmod 600 "$KUBECONFIG"
 
-      # 8️⃣ Verify cluster connectivity
+      # 7️⃣ Verify cluster connectivity
       - name: Verify Cluster
         run: |
           kubectl cluster-info
           kubectl get nodes -o wide
-          # If you use a custom namespace, ensure it exists:
           kubectl get ns "$K8S_NAMESPACE"
 
-      # 9️⃣ Update Deployment Image
+      # 8️⃣ Update Image in Deployment
       - name: Update Deployment Image
         run: |
-          # Adjust container name if different:
-          CONTAINER_NAME="java-ci-container"
+          CONTAINER_NAME="java-ci-container"  # <-- change if your container name differs
           kubectl -n "$K8S_NAMESPACE" set image deployment/java-ci-deployment \
             "$CONTAINER_NAME=$IMAGE_NAME:${{ github.sha }}"
 
-      # 🔟 Wait for rollout
+      # 9️⃣ Rollout Status
       - name: Rollout Status
         run: |
           kubectl -n "$K8S_NAMESPACE" rollout status deployment/java-ci-deployment --timeout=180s
